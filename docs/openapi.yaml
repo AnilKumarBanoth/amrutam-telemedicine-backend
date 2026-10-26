@@ -1,0 +1,280 @@
+openapi: 3.1.0
+info:
+  title: Amrutam Telemedicine Backend API
+  version: 1.0.0
+  description: |
+    Production-grade backend API for Amrutam Telemedicine platform.
+    Designed for 100,000 daily consultations, p95 latency < 200ms read / < 500ms write,
+    zero double booking (distributed locking + optimistic concurrency), AES-256-GCM PHI encryption,
+    tamper-evident SHA-256 hash-chained audit trails, and HIPAA/DISHA regulatory compliance.
+servers:
+  - url: http://localhost:3000
+    description: Local Development Server
+  - url: https://api.amrutam.co.in
+    description: Production Cluster Gateway
+
+paths:
+  /health/live:
+    get:
+      summary: Liveness Probe
+      description: Returns 200 UP for Kubernetes liveness checks.
+      responses:
+        '200':
+          description: Service is healthy.
+
+  /health/ready:
+    get:
+      summary: Readiness Probe
+      description: Returns ready status verifying database pool and lock managers.
+      responses:
+        '200':
+          description: Dependencies are reachable.
+
+  /metrics:
+    get:
+      summary: Prometheus Metrics
+      description: Returns Prometheus metrics including HTTP duration histograms, lock contention counters, and consultation counters.
+      responses:
+        '200':
+          description: Prometheus metrics output.
+
+  /api/v1/auth/register:
+    post:
+      summary: Register a new patient or doctor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, role, firstName, lastName]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                role: { type: string, enum: [PATIENT, DOCTOR, ADMIN, AUDITOR] }
+                firstName: { type: string }
+                lastName: { type: string }
+                phoneNumber: { type: string }
+                registrationNumber: { type: string }
+                specialization: { type: string }
+                consultationFee: { type: number }
+      responses:
+        '201':
+          description: Successfully registered.
+        '409':
+          description: Email already registered.
+
+  /api/v1/auth/login:
+    post:
+      summary: Authenticate user credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                mfaToken: { type: string, description: 6-digit TOTP code if MFA enabled }
+      responses:
+        '200':
+          description: Authentication successful, returns JWT access and refresh tokens.
+        '401':
+          description: Invalid email, password, or MFA code.
+
+  /api/v1/auth/mfa/setup:
+    post:
+      summary: Initialize TOTP Multi-Factor Authentication
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Returns TOTP secret and QR code data URL.
+
+  /api/v1/auth/mfa/verify:
+    post:
+      summary: Verify code and activate MFA
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        '200':
+          description: MFA successfully enabled.
+
+  /api/v1/doctors:
+    get:
+      summary: Search and filter doctors
+      parameters:
+        - name: specialization
+          in: query
+          schema: { type: string }
+        - name: language
+          in: query
+          schema: { type: string }
+        - name: minRating
+          in: query
+          schema: { type: number }
+        - name: maxFee
+          in: query
+          schema: { type: number }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: Paginated doctor search results.
+
+  /api/v1/doctors/{id}/slots:
+    get:
+      summary: Get availability slots for a doctor
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: startDate
+          in: query
+          schema: { type: string, format: date-time }
+        - name: endDate
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: List of availability slots.
+
+  /api/v1/bookings:
+    post:
+      summary: Book a consultation slot (Saga Orchestration)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+          description: Unique transaction key to guarantee idempotency and prevent duplicate charges.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doctorId, slotId]
+              properties:
+                doctorId: { type: string, format: uuid }
+                slotId: { type: string, format: uuid }
+                symptoms: { type: string }
+                paymentMethod: { type: string, default: UPI }
+      responses:
+        '201':
+          description: Consultation booked and confirmed via Saga orchestrator.
+        '409':
+          description: Slot locked or already booked by concurrent transaction.
+
+  /api/v1/consultations/{id}:
+    get:
+      summary: Get consultation details with decrypted PHI
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Consultation details. Protected Health Information (PHI) decrypted if requester is authorized.
+        '403':
+          description: Unauthorized to access medical records.
+
+  /api/v1/consultations/{id}/clinical-notes:
+    post:
+      summary: Record encrypted clinical notes and diagnosis
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [notes, diagnosis]
+              properties:
+                notes: { type: string }
+                diagnosis: { type: string }
+      responses:
+        '200':
+          description: Encrypted with AES-256-GCM and persisted.
+
+  /api/v1/prescriptions:
+    post:
+      summary: Issue digital prescription with cryptographic signature
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [consultationId, medications]
+              properties:
+                consultationId: { type: string, format: uuid }
+                medications:
+                  type: array
+                  items:
+                    type: object
+                    required: [medicine_name, dosage, frequency, duration_days, instructions]
+                    properties:
+                      medicine_name: { type: string }
+                      dosage: { type: string }
+                      frequency: { type: string }
+                      duration_days: { type: integer }
+                      instructions: { type: string }
+                instructions: { type: string }
+      responses:
+        '201':
+          description: Prescription digitally signed (HMAC-SHA256) and issued.
+
+  /api/v1/audit/verify-integrity:
+    get:
+      summary: Verify tamper-evident cryptographic hash chain
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Mathematical verification report across all regulatory audit log blocks.
+
+  /api/v1/analytics/dashboard:
+    get:
+      summary: Retrieve system analytics and SLO metrics
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Aggregated consultation metrics, revenue, and latency SLA targets.
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

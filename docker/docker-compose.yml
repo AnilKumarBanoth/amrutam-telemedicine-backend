@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  # 1. Amrutam Telemedicine Backend API
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: amrutam_backend_api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=amrutam_user
+      - DB_PASSWORD=amrutam_secure_password
+      - DB_NAME=amrutam_telemedicine
+      - DB_USE_MEMORY_FALLBACK=false
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=amrutam-telemedicine-system-default-jwt-secret-min-32-chars!
+      - ENCRYPTION_MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - PRESCRIPTION_SIGNING_KEY=amrutam-digital-prescription-signing-key-production-grade
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - amrutam_network
+
+  # 2. PostgreSQL 16 with Partitioning & Relational Constraints
+  postgres:
+    image: postgres:16-alpine
+    container_name: amrutam_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=amrutam_user
+      - POSTGRES_PASSWORD=amrutam_secure_password
+      - POSTGRES_DB=amrutam_telemedicine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../sql/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ../sql/02_partitioning.sql:/docker-entrypoint-initdb.d/02_partitioning.sql:ro
+      - ../sql/03_indexes_and_constraints.sql:/docker-entrypoint-initdb.d/03_indexes_and_constraints.sql:ro
+      - ../sql/04_seed_data.sql:/docker-entrypoint-initdb.d/04_seed_data.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U amrutam_user -d amrutam_telemedicine"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - amrutam_network
+
+  # 3. Redis (High-Throughput Caching & Redlock Distributed Locking)
+  redis:
+    image: redis:7-alpine
+    container_name: amrutam_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass ""
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - amrutam_network
+
+  # 4. Prometheus (Time-Series Metric Scraping for Latency SLOs)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: amrutam_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - amrutam_network
+
+  # 5. Grafana (Observability & SLO Dashboards)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: amrutam_grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - amrutam_network
+
+networks:
+  amrutam_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
