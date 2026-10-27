@@ -1,0 +1,246 @@
+"""
+Amrutam Telemedicine Backend GraphQL Schema Definition
+Target Scale: 100,000 Consultations / Day
+Standards: HIPAA, DISHA, Strongly-Typed GraphQL 2021
+"""
+
+enum UserRole {
+  PATIENT
+  DOCTOR
+  ADMIN
+  AUDITOR
+}
+
+enum SlotStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+  CANCELLED
+}
+
+enum ConsultationStatus {
+  REQUESTED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+type User {
+  id: ID!
+  email: String!
+  role: UserRole!
+  isActive: Boolean!
+  mfaEnabled: Boolean!
+  profile: Profile
+  doctor: Doctor
+  createdAt: String!
+  updatedAt: String!
+}
+
+type Profile {
+  id: ID!
+  userId: ID!
+  firstName: String!
+  lastName: String!
+  phoneNumber: String
+  dateOfBirth: String
+  gender: String
+  bloodGroup: String
+  addressCity: String
+  addressState: String
+}
+
+type Doctor {
+  id: ID!
+  userId: ID!
+  registrationNumber: String!
+  specialization: String!
+  subSpecialization: String
+  experienceYears: Int!
+  consultationFee: Float!
+  languages: [String!]!
+  bio: String
+  ratingAvg: Float!
+  ratingCount: Int!
+  isVerified: Boolean!
+  profile: Profile
+  availableSlots(startDate: String, endDate: String): [AvailabilitySlot!]!
+}
+
+type AvailabilitySlot {
+  id: ID!
+  doctorId: ID!
+  startTime: String!
+  endTime: String!
+  status: SlotStatus!
+  version: Int!
+}
+
+type Consultation {
+  id: ID!
+  referenceNo: String!
+  patientId: ID!
+  doctorId: ID!
+  slotId: ID!
+  status: ConsultationStatus!
+  symptoms: String
+  clinicalNotes: String # Decrypted for authorized doctor/patient/auditor
+  diagnosis: String     # Decrypted for authorized doctor/patient/auditor
+  roomUrl: String
+  cancelledReason: String
+  startedAt: String
+  completedAt: String
+  createdAt: String!
+  prescription: Prescription
+  payment: Payment
+}
+
+type MedicationItem {
+  medicineName: String!
+  dosage: String!
+  frequency: String!
+  durationDays: Int!
+  instructions: String!
+}
+
+type Prescription {
+  id: ID!
+  consultationId: ID!
+  doctorId: ID!
+  patientId: ID!
+  medications: [MedicationItem!]!
+  instructions: String
+  digitalSignature: String! # HMAC-SHA256 signature
+  issuedAt: String!
+}
+
+type Payment {
+  id: ID!
+  idempotencyKey: String!
+  consultationId: ID!
+  patientId: ID!
+  amount: Float!
+  currency: String!
+  status: PaymentStatus!
+  providerTransactionId: String
+}
+
+type AuditLog {
+  id: ID!
+  actorId: ID
+  actorRole: String
+  action: String!
+  resource: String!
+  resourceId: String
+  previousHash: String!
+  blockHash: String!
+  createdAt: String!
+}
+
+type AuditVerificationReport {
+  isValid: Boolean!
+  totalVerified: Int!
+  errorIndex: Int
+  errorLogId: ID
+  reason: String
+}
+
+type AnalyticsOverview {
+  totalConsultations: Int!
+  completedConsultations: Int!
+  cancelledConsultations: Int!
+  completionRatePercentage: String!
+  totalRevenueInr: Float!
+  activeDoctorsCount: Int!
+  activePatientsCount: Int!
+}
+
+type ScaleMetrics {
+  dailyCapacityTarget: Int!
+  currentThroughputPercentage: String!
+  p95ReadLatencyTargetMs: String!
+  p95WriteLatencyTargetMs: String!
+  targetAvailability: String!
+}
+
+type AnalyticsDashboard {
+  overview: AnalyticsOverview!
+  scaleMetrics: ScaleMetrics!
+  timestamp: String!
+}
+
+type AuthPayload {
+  user: User!
+  accessToken: String!
+  refreshToken: String!
+}
+
+type Query {
+  # Doctor Discovery
+  doctors(
+    specialization: String
+    language: String
+    minRating: Float
+    maxFee: Float
+    limit: Int
+    offset: Int
+  ): [Doctor!]!
+
+  doctor(id: ID!): Doctor
+
+  # Consultation
+  consultation(id: ID!): Consultation
+  myConsultations: [Consultation!]!
+
+  # Prescription
+  prescription(consultationId: ID!): Prescription
+
+  # Compliance & Audit (Auditor/Admin)
+  auditLogs(limit: Int, offset: Int): [AuditLog!]!
+  verifyAuditIntegrity: AuditVerificationReport!
+
+  # Analytics (Admin/Auditor)
+  analyticsDashboard: AnalyticsDashboard!
+}
+
+input BookConsultationInput {
+  doctorId: ID!
+  slotId: ID!
+  symptoms: String
+  paymentMethod: String
+  idempotencyKey: String!
+}
+
+input MedicationInput {
+  medicineName: String!
+  dosage: String!
+  frequency: String!
+  durationDays: Int!
+  instructions: String!
+}
+
+input IssuePrescriptionInput {
+  consultationId: ID!
+  medications: [MedicationInput!]!
+  instructions: String
+}
+
+type Mutation {
+  # Booking Saga
+  bookConsultation(input: BookConsultationInput!): Consultation!
+
+  # Consultation Lifecycle
+  updateConsultationStatus(id: ID!, status: ConsultationStatus!, cancelledReason: String): Consultation!
+  recordClinicalNotes(id: ID!, notes: String!, diagnosis: String!): Boolean!
+
+  # Prescription
+  issuePrescription(input: IssuePrescriptionInput!): Prescription!
+}

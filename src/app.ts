@@ -1,6 +1,7 @@
 import express, { Express } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
+import path from 'path';
 import { apiRouter } from './routes/api.router';
 import { requestTracerMiddleware } from './middleware/requestTracer.middleware';
 import { rateLimitMiddleware } from './middleware/rateLimiter.middleware';
@@ -15,8 +16,9 @@ export const createApp = (): Express => {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'", "'unsafe-inline'"],
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
           imgSrc: ["'self'", 'data:', 'https:']
         }
       },
@@ -41,16 +43,19 @@ export const createApp = (): Express => {
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-  // 4. Observability: Distributed Tracing & Prometheus Duration Timer
+  // 4. Static Files for Interactive Control Dashboard
+  app.use(express.static(path.join(process.cwd(), 'public')));
+
+  // 5. Observability: Distributed Tracing & Prometheus Duration Timer
   app.use(requestTracerMiddleware);
 
-  // 5. Sliding Window Rate Limiting
+  // 6. Sliding Window Rate Limiting
   app.use(rateLimitMiddleware);
 
-  // 6. Mount API routes
+  // 7. Mount API routes
   app.use(apiRouter);
 
-  // 7. Global Centralized Error Handler
+  // 8. Global Centralized Error Handler
   app.use(errorHandlerMiddleware);
 
   return app;
